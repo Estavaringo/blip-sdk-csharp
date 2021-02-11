@@ -1,13 +1,20 @@
-﻿using Lime.Messaging.Resources;
+﻿using Blip.HttpClient.Services;
+using Lime.Messaging.Resources;
 using Lime.Protocol;
 using Lime.Protocol.Client;
 using Lime.Protocol.Network;
 using Lime.Protocol.Network.Modules;
 using Lime.Protocol.Security;
+using Lime.Protocol.Serialization;
+using Lime.Protocol.Serialization.Newtonsoft;
+using RestEase;
 using Serilog;
 using System;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
+using Take.Blip.Client.Extensions;
 
 namespace Take.Blip.Client
 {
@@ -18,6 +25,8 @@ namespace Take.Blip.Client
     {
         private readonly ITransportFactory _transportFactory;
         private readonly ILogger _logger;
+        private readonly string KEY_PREFIX = "Key";
+        private string MSGING_BASE_URL(string domain) => $"https://{domain}/";
 
         public BlipClientBuilder()
             : this(new TcpTransportFactory())
@@ -93,6 +102,8 @@ namespace Take.Blip.Client
 
         public PresenceStatus PresenceStatus { get; private set; }
         public int EnvelopeBufferSize { get; private set; }
+
+        public string AuthorizationKey => $"{Identifier}:{AccessKey.ToBase64()}".ToBase64();
 
         public BlipClientBuilder UsingPassword(string identifier, string password)
         {
@@ -282,6 +293,30 @@ namespace Take.Blip.Client
             return new BlipClient(onDemandClientChannel, _logger);
         }
 
+        /// <summary>
+        /// Builds an HTTP <see cref="ISender" /> with the configured parameters
+        /// </summary>
+        private ISender BuildHttp()
+        {
+            var domain = Domain.Equals(Constants.DEFAULT_DOMAIN)
+                       ? $"http.{Domain}"
+                       : Domain;
+
+            var httpClient = new HttpClient(new BlipHttpClientHandler())
+            {
+                BaseAddress = new Uri(MSGING_BASE_URL(domain)),
+                Timeout = SendTimeout,
+            };
+
+            var client = new RestClient(httpClient)
+            {
+                JsonSerializerSettings = new EnvelopeSerializer(new DocumentTypeResolver().WithBlipDocuments()).Settings
+            }.For<IHttpBlipClient>();
+
+            client.Authorization = new AuthenticationHeaderValue(KEY_PREFIX, AuthorizationKey);
+            return new HttpBlipClient(client);
+        }
+
         private Authentication GetAuthenticationScheme()
         {
             Authentication result = null;
@@ -319,7 +354,7 @@ namespace Take.Blip.Client
         }
 
         private async Task SetPresenceAsync(IClientChannel clientChannel,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             if (IsGuest(clientChannel.LocalNode.Name) || PresenceStatus == PresenceStatus.Unavailable)
             {
@@ -339,7 +374,7 @@ namespace Take.Blip.Client
         }
 
         private async Task SetReceiptAsync(IClientChannel clientChannel,
-            CancellationToken cancellationToken = default(CancellationToken))
+            CancellationToken cancellationToken = default)
         {
             if (IsGuest(clientChannel.LocalNode.Name) || ReceiptEvents.Length == 0)
             {
